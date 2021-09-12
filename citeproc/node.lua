@@ -648,7 +648,7 @@ function Node.layout:render(items, context)
     local res = self:render_children(item, context)
     if res then
       if context.mode == "bibliography" then
-        res = self:get_engine().formatter["@bibliography/entry"](res)
+        res = self:get_engine().formatter["@bibliography/entry"](res,item)
       end
       table.insert(output, res)
     end
