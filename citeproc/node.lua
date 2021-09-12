@@ -3,6 +3,7 @@
 --]]
 
 local dom = require("luaxml-domobject")
+local inspect = require("inspect")
 
 local util = require("citeproc.util")
 
@@ -44,9 +45,12 @@ Node.Element.option_type = {
 }
 
 Node.Element.inheritable_options = {
-  ["engine"] = true,
   -- Debug
   ["level"] = true,
+  -- Engine
+  ["engine"] = true,
+  -- Layout
+  ["mode"] = true,
   -- Text
   ["item"] = true,
   -- Text
@@ -271,7 +275,7 @@ function Node.Element:format (str, context)
     local value = context[attribute]
     if value then
       local key = string.format("@%s/%s", attribute, value)
-      local formatter = context.engine.formatter[key]
+      local formatter = self:get_engine().formatter[key]
       if formatter then
         if type(formatter) == "string" then
           str = string.gsub(formatter, "%%%%STRING%%%%", str)
@@ -402,11 +406,11 @@ function Node.style:render_citation (items, context)
   return citation:render(items, context)
 end
 
-function Node.style:render_biblography (item, context)
+function Node.style:render_biblography (items, context)
   self:debug_info(context)
   context = self:process_context(context)
   local bibliography = self:get_child("bibliography")
-  return bibliography:render(item, context)
+  return bibliography:render(items, context)
 end
 
 function Node.style:get_locales (lang)
@@ -565,12 +569,14 @@ Node.term = Node.Element:new()
 
 function Node.term:render (context, is_plural)
   self:debug_info(context)
+  context = self:process_context(context)
+
   local output = {
     single = self:get_text(),
   }
   for _, child in ipairs(self:get_children()) do
     if child:is_element() then
-      output[child:get_element_name()] = context.engine.formatter.text_escape(child:get_text())
+      output[child:get_element_name()] = self:get_engine().formatter.text_escape(child:get_text())
     end
   end
   local res = output.single
@@ -579,7 +585,7 @@ function Node.term:render (context, is_plural)
       res = output.multiple
     end
   end
-  res = context.engine.formatter.text_escape(res)
+  res = self:get_engine().formatter.text_escape(res)
   return res
 end
 
@@ -596,55 +602,70 @@ Node.citation = Node.Element:new()
 function Node.citation:render (items, context)
   self:debug_info(context)
   context = self:process_context(context)
+  context.mode = "citation"
+
   local sort = self:get_child("sort")
-  local layout = self:get_child("layout")
-  -- util.debug(inspect(items))
   if sort then
     sort:sort(items, context)
   end
-  -- util.debug(inspect(items))
-  return layout:render_citation(items, context)
+
+  local layout = self:get_child("layout")
+  return layout:render(items, context)
 end
 
 
 Node.bibliography = Node.Element:new()
 
-function Node.bibliography:render (item, context)
+function Node.bibliography:render (items, context)
   self:debug_info(context)
   context = self:process_context(context)
-  local layout = self:get_child("layout")
-  local res =  layout:render(item, context)
-  if res then
-    -- pass rendered bibitem and item to output format bibitem renderer
-    res = context.engine.formatter.print_bibitem(res, item)
+  context.mode = "bibliography"
+
+  local sort = self:get_child("sort")
+  if sort then
+    sort:sort(items, context)
   end
-  return res
+
+  local layout = self:get_child("layout")
+  return layout:render(items, context)
 end
 
 
 Node.layout = Node.Element:new()
 
-function Node.layout:render_citation (items, context)
+function Node.layout:render(items, context)
   self:debug_info(context)
+
+  -- When used within cs:citation, the delimiter attribute may be used to specify a delimiter for cites within a citation.
+  -- Thus the processing of context is put after render_children().
+  if context.mode ~= "citation" then
+    context = self:process_context(context)
+  end
+
   local output = {}
   for _, item in pairs(items) do
     context.item = item
     local res = self:render_children(item, context)
     if res then
+      if context.mode == "bibliography" then
+        res = self:get_engine().formatter["@bibliography/entry"](res)
+      end
       table.insert(output, res)
     end
   end
   if next(output) == nil then
     return "[CSL STYLE ERROR: reference with no printed form.]"
   end
-  -- When used within cs:citation, the delimiter attribute may be used to specify a delimiter for cites within a citation.
-  -- Thus the processing of context is put after render_children().
-  context = self:process_context(context)
 
-  local res = self:join(output, context)
-  res = self:wrap(res, context)
-  res = self:format(res, context)
-  return res
+  if context.mode == "citation" then
+    context = self:process_context(context)
+    local res = self:join(output, context)
+    res = self:wrap(res, context)
+    res = self:format(res, context)
+    return res
+  else
+    return output
+  end
 end
 
 
@@ -693,7 +714,7 @@ function Node.text:render (item, context)
   local value = self:get_attribute("value")
   if value then
     res = value
-    res = context.engine.formatter.text_escape(res)
+    res = self:get_engine().formatter.text_escape(res)
   end
 
   if res and context["quotes"] then
@@ -1072,6 +1093,7 @@ function Node.names:render (item, context)
   local label = self:get_child("label")
 
   local output = {}
+  local num_names = 0
   for _, role in ipairs(util.split(context["variable"])) do
     local names = item[role]
 
@@ -1079,22 +1101,33 @@ function Node.names:render (item, context)
 
     if names then
       local res = name:render(names, context)
-      if res and label then
-        local label_result = label:render(item, context)
-        if label_result then
-          res = res .. label_result
+      if res then
+        if type(res) == "number" then  -- name[form="count"]
+          num_names = num_names + res
+        elseif label then
+          local label_result = label:render(item, context)
+          if label_result then
+            res = res .. label_result
+          end
         end
       end
       table.insert(output, res)
     end
   end
 
-  local res = self:join(output, context)
+  local ret = nil
+  if num_names > 0 then
+    ret = num_names
+  else
+    ret = self:join(output, context)
+  end
 
   table.insert(context.rendered_quoted_text, false)
 
-  if res then
-    return res
+  if ret then
+    ret = self:format(ret, context)
+    ret = self:wrap(ret, context)
+    return ret
   else
     local substitute = self:get_child("substitute")
     if substitute then
@@ -1109,7 +1142,6 @@ end
 Node.name = Node.Element:new()
 
 Node.name:set_default_options({
-  ["and"] = "text",
   ["delimiter"] = ", ",
   ["delimiter-precedes-et-al"] = "contextual",
   ["delimiter-precedes-last"] = "contextual",
@@ -1141,131 +1173,171 @@ function Node.name:render (names, context)
   local opt_et_al_use_last = context["et-al-use-last"]
 
   local form = context["form"]
-  local initialize = context["initialize"]
-  local initialize_with = context["initialize-with"]
   local name_as_sort_order = context["name-as-sort-order"]
-  local sort_separator = context["sort-separator"]
 
-  local output = {}
   local et_al_truncate = false
   if et_al_min > 0 and #names >= et_al_min and et_al_use_first > 0 then
     et_al_truncate = true
-    names = util.slice(names, 1, et_al_use_first)
   end
 
   if form == "count" then
-    return tostring(#names)
+    if et_al_truncate then
+      return et_al_use_first
+    else
+      return #names
+    end
   end
+
+  local output = ""
+
+  local num_names_left = #names
+  local res = nil
+  local inverted = false
 
   for i, name in ipairs(names) do
-    local given = name["given"] or ""
-    local family = name["family"] or ""
-    local suffix = name["suffix"] or ""
-
-    if initialize and initialize_with then
-      given = util.initialize(given, initialize_with)
+    if num_names_left <= 0 then
+      break
     end
-
-    for _, child in ipairs(self:get_children()) do
-      if child:is_element() and child:get_element_name() == "name-part" then
-        family, given = child:format_parts(family, given)
+    local use_delimeter = true
+    if et_al_truncate and i > et_al_use_first then
+      num_names_left = 0
+      use_delimeter = self:_check_delimiter(delimiter_precedes_et_al, i, inverted)
+      res = context.et_al
+    else
+      if num_names_left == 1 and context["and"] then
+        use_delimeter = self:_check_delimiter(delimiter_precedes_last, i, inverted)
       end
+      res, inverted = self:render_single_name(name, i, context)
     end
 
-    local order = {given, family, suffix}
-    local res
-    if form == "long" then
-      if (name_as_sort_order == 'all' or (name_as_sort_order == 'first' and i == 1)) then
-        order = {family, given, suffix}
-        res = util.join_non_empty(order, sort_separator)
-      else
-        order = {given, family}
-        res = util.join_non_empty(order, " ")
-        if name["comma-suffix"] then
-          res = util.join_non_empty({res, suffix}, ", ")
+    if res and res ~= "" then
+      if i > 1 then
+        if use_delimeter then
+          output = self:concat(output, delimiter, context)
         else
-          res = util.join_non_empty({res, suffix}, " ")
+          output = output .. " "
+        end
+        if num_names_left == 1 and context["and"] then
+          local and_term = ""
+          if context["and"] == "text" then
+            and_term = self:get_term("and"):render(context)
+          elseif context["and"] == "symbol" then
+            and_term = self:get_engine().formatter.text_escape("&")
+          end
+          output = output .. and_term .. " "
         end
       end
-    elseif form == "short" then
-      res = family
-    else
-      error("Invalid \"form\" attribute of \"name\".")
+
+      output = output .. res
     end
-    table.insert(output, res)
+
+    num_names_left = num_names_left -1
   end
 
-  local ret = nil
-
-  if et_al_truncate then
-    local et_al = context.et_al
-    ret = self:join(output, context)
-    if et_al ~= "" then
-      if (delimiter_precedes_et_al == 'always' or
-        (delimiter_precedes_et_al == 'contextual' and
-        #(output) > 1)) then
-        ret = ret .. delimiter .. et_al
-      else
-        ret = ret .. " " .. et_al
-      end
-    end
-  elseif #output > 1 then
-    ret = self:join(util.slice(output, 1, -2), context)
-    if delimiter_precedes_last == "always" or (#output > 2 and delimiter_precedes_last == "contextual") then
-      ret = ret .. delimiter
-    else
-      ret = ret .. " "
-    end
-    local and_term = ""
-    if context["and"] == "text" then
-      and_term = self:get_term("and"):render(context)
-    elseif context["and"] == "symbol" then
-      and_term = context.engine.formatter.text_escape("&")
-    end
-    ret = ret .. and_term .. " " .. output[#output]
-  else
-    ret = output[1]
-  end
-
-  ret = string.gsub(ret, "(%a)'(%a)", "%1" .. util.unicode["apostrophe"] .. "%2")
+  local ret = string.gsub(output, "(%a)'(%a)", "%1" .. util.unicode["apostrophe"] .. "%2")
 
   ret = self:wrap(ret, context)
   ret = self:format(ret, context)
   return ret
 end
 
+function Node.name:_check_delimiter(delimiter_attribute, index, inverted)
+  -- `delimiter-precedes-et-al` and `delimiter-precedes-last`
+  if delimiter_attribute == "always" then
+    return true
+  elseif delimiter_attribute == "never" then
+    return false
+  elseif delimiter_attribute == "contextual" then
+    if index > 2 then
+      return true
+    else
+      return false
+    end
+  elseif delimiter_attribute == "after-inverted-name" then
+    if inverted then
+      return true
+    else
+      return false
+    end
+  end
+  return false
+end
+
+function Node.name:render_single_name(name, index, context)
+  local form = context["form"]
+  local initialize = context["initialize"]
+  local initialize_with = context["initialize-with"]
+  local name_as_sort_order = context["name-as-sort-order"]
+  local sort_separator = context["sort-separator"]
+
+  local family = name["family"] or ""
+  local given = name["given"] or ""
+  local suffix = name["suffix"] or ""
+
+  if family == "" and given == "" then
+    if name["literal"] then
+      return name["literal"]
+    else
+      error("Name not avaliable")
+    end
+  end
+
+  if initialize and initialize_with then
+    given = util.initialize(given, initialize_with)
+  end
+
+  for _, child in ipairs(self:get_children()) do
+    if child:is_element() and child:get_element_name() == "name-part" then
+      family, given = child:format_parts(family, given, context)
+    end
+  end
+
+  local res = nil
+  local inverted = false
+  if form == "long" then
+    local order
+    local suffix_separator = sort_separator
+    if not util.is_romanesque(name["family"]) then
+      order = {family, given}
+      inverted = true
+      sort_separator = ""
+    elseif name_as_sort_order == 'all' or (name_as_sort_order == 'first' and index == 1) then
+      order = {family, given}
+      inverted = true
+    else
+      order = {given, family}
+      sort_separator = " "
+      if name["comma-suffix"] then
+        suffix_separator = ", "
+      else
+        suffix_separator = " "
+      end
+    end
+    res = util.join_non_empty(order, sort_separator)
+    res = util.join_non_empty({res, suffix}, suffix_separator)
+  elseif form == "short" then
+    res = family
+  else
+    error(string.format('Invalid attribute form="%s" of "name".', form))
+  end
+  return res, inverted
+end
+
 
 Node["name-part"] = Node.Element:new()
 
-Node["name-part"].format_parts = function (self, family, given)
-  local context = self:process_context()
+Node["name-part"].format_parts = function (self, family, given, context)
+  local context = self:process_context(context)
   local name = context["name"]
-  local has_formatting_attributes = false
-  for key, value in pairs(self._attr) do
-    if key ~= "name" then
-      has_formatting_attributes = true
-      break
-    end
-  end
-  if not has_formatting_attributes then
-    util.warning("Invalid attribute of \"date-part\"")
-  end
+
   if name == "family" then
-    if not has_formatting_attributes then
-      family = ""
-    else
-      family = self:case(family, context)
-      family = self:wrap(family, context)
-      family = self:format(family, context)
-    end
+    family = self:case(family, context)
+    family = self:wrap(family, context)
+    family = self:format(family, context)
   elseif name == "given" then
-    if not has_formatting_attributes then
-      given = ""
-    else
-      given = self:case(given, context)
-      given = self:format(given, context)
-      given = self:wrap(given, context)
-    end
+    given = self:case(given, context)
+    given = self:format(given, context)
+    given = self:wrap(given, context)
   end
   return family, given
 end
