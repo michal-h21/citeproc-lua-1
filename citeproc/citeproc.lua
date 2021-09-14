@@ -4,14 +4,14 @@
 
 local dom = require("luaxml-domobject")
 
-local Node = require("citeproc.node")
-local formats = require("citeproc.formats")
-local util = require("citeproc.util")
+local Node = require("citeproc.citeproc-node")
+local formats = require("citeproc.citeproc-formats")
+local util = require("citeproc.citeproc-util")
 
 
 local CiteProc = {}
 
-function CiteProc:new(sys, style)
+function CiteProc:new (sys, style)
   if sys == nil then
     error("\"citeprocSys\" required")
   end
@@ -25,40 +25,41 @@ function CiteProc:new(sys, style)
   o.registry = {
     reflist = {}
   }
+
+  o.sys = sys
+  o.system_locales = {}
+
   if type(style) == "string" then
     o.csl = dom.parse(style)
   else
     o.csl = style
   end
-  o.sys = sys
-  o.registeredItems = {}
-  o.root = o.csl:root_node()
+  o.csl:traverse_elements(self.set_base_class)
+  o.csl:root_node().engine = o
   o.style = o.csl:get_path("style")[1]
-  o.style.engine = o
-  o.locales = {}
-  o.csl:traverse_elements(function (node)
-    Node.Element:make_base_class(node)
-  end)
+  o.csl:root_node().style = o.style
+
   o.formatter = formats.html
+
   setmetatable(o, self)
   self.__index = self
   return o
 end
 
-function CiteProc:updateItems(ids)
+function CiteProc:updateItems (ids)
   for _, id in ipairs(ids) do
     local item = self:retrieve_item(id)
     table.insert(self.registry.reflist, item)
   end
 end
 
-function CiteProc:processCitationCluster(citation, citationsPre, citationsPost)
+function CiteProc:processCitationCluster (citation, citationsPre, citationsPost)
   local output = {}
   local params = {}
   return {params, output}
 end
 
-function CiteProc:makeCitationCluster(citation_items)
+function CiteProc:makeCitationCluster (citation_items)
   local items = {}
   for _, cite_item in ipairs(citation_items) do
     local item = self:retrieve_item(cite_item.id)
@@ -68,13 +69,25 @@ function CiteProc:makeCitationCluster(citation_items)
   return self.style:render_citation(items, {})
 end
 
-function CiteProc:makeBibliography()
+function CiteProc:makeBibliography ()
   local res = self.style:render_biblography(self.registry.reflist, {})
   local params = {}
   return params, res
 end
 
-function CiteProc:retrieve_item(id)
+function CiteProc.set_base_class (node)
+  if node:is_element() then
+    local name = node:get_element_name()
+    local element = Node[name]
+    if element then
+      element:set_base_class(node)
+    else
+      Node["Element"]:set_base_class(node)
+    end
+  end
+end
+
+function CiteProc:retrieve_item (id)
   local item = {}
   local item_raw = self.sys:retrieveItem(id)
   if not item_raw then
@@ -91,6 +104,25 @@ function CiteProc:retrieve_item(id)
     end
   end
   return item
+end
+
+function CiteProc:get_system_locale (lang)
+  local locale = self.system_locales[lang]
+  if not locale then
+    locale = self.sys:retrieveLocale(lang)
+    if not locale then
+      util.warning(string.format("Failed to retrieve locale \"%s\"", lang))
+      return nil
+    end
+    if type(locale) == "string" then
+      locale = dom.parse(locale)
+    end
+    locale:traverse_elements(self.set_base_class)
+    locale:root_node().engine = self
+    locale:root_node().style = self.style
+    self.system_locales[lang] = locale
+  end
+  return locale
 end
 
 
