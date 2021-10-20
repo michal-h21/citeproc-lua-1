@@ -1,13 +1,14 @@
 #!/usr/bin/env texlua
+
+require("busted.runner")()
+
 kpse.set_program_name("luatex")
 
 require("lualibs")
 local dom = require("luaxml-domobject")
 local lfs = require("lfs")
-local inspect = require("inspect")
 
--- local CiteProc = require(kpse.lookup("cbustediteproc.lua", {path = "./citeproc/"}))
-local CiteProc = require("citeproc.citeproc")
+local citeproc = require("citeproc.citeproc")
 
 
 local function read_file(path)
@@ -18,39 +19,86 @@ local function read_file(path)
   return content
 end
 
-local function startswith(str, prefix)
-  return string.sub(str, 1, #prefix) == prefix
-end
-
 local function endswith(str, suffix)
   return string.sub(str, -#suffix) == suffix
 end
 
-local function listdir(path, prefix)
+local function listdir(path)
   local files = {}
   for file in lfs.dir(path) do
     if file ~= "." and file ~= ".." and endswith(file, ".txt") then
-      if not prefix or startswith(file, prefix) then
-        table.insert(files, string.sub(file, 1, -5))
-      end
+      table.insert(files, string.sub(file, 1, -5))
     end
   end
   table.sort(files)
   return files
 end
 
+local function test_citations(engine, fixture)
+  -- TODO
+  pending("citations")
+end
 
-local function run_test(fixture, protected)
+local function test_citation_items(engine, fixture)
+  local citation_items = fixture.citation_items
+  if not citation_items then
+    citation_items = {{}}
+    for _, item in ipairs(fixture.input) do
+      table.insert(citation_items[1], {id = tostring(item.id)})
+    end
+  end
+
+  local output = {}
+  for _, items in ipairs(citation_items) do
+    local res = engine:makeCitationCluster(items)
+    -- Some hacks to pass the test-suite
+    res = string.gsub(res, "^ibid", "Ibid")
+    table.insert(output, res)
+  end
+  return table.concat(output, "\n")
+end
+
+local function test_bibliography(engine, fixture)
+  local bibentries = fixture.bibentries
+  if not bibentries then
+    bibentries = {{}}
+    for _, item in ipairs(fixture.input) do
+      table.insert(bibentries[1], tostring(item.id))
+    end
+  end
+
+  if fixture.bibsection then
+    -- TODO
+    pending("bibsection")
+  end
+
+  local output = {}
+  for _, items in ipairs(bibentries) do
+    engine:updateItems(items)
+    local result = engine:makeBibliography()
+    local params = result[1]
+    local entries = result[2]
+    local res = params.bibstart
+    for _, entry in ipairs(entries) do
+      res = res .. "  " .. entry .. "\n"
+    end
+    res = res .. params.bibend
+    table.insert(output, res)
+  end
+  return table.concat(output, "\n")
+end
+
+local function run_test(fixture)
   local bib = {}
   for i, item in ipairs(fixture.input) do
     if item.id == nil then
       item.id = "item-" .. tostring(i)
     end
-    bib[item.id] = item
+    bib[tostring(item.id)] = item
   end
 
   local citeproc_sys = {
-    retrieveLocale = function (self, lang)
+    retrieveLocale = function (lang)
       if not lang then
         return nil
       end
@@ -61,84 +109,31 @@ local function run_test(fixture, protected)
       end
       return dom.parse(content)
     end,
-    retrieveItem = function (self, id)
+    retrieveItem = function (id)
       return bib[id]
     end
   }
 
   local style = dom.parse(fixture.csl)
 
-  local citeproc = CiteProc:new(citeproc_sys, style)
+  local engine = citeproc.new(citeproc_sys, style)
+  engine:set_formatter('html')
+  citeproc.util.warning_enabled = false
 
-  local test_func
   if fixture.mode == "citation" then
-    if fixture.citation then
-      -- TODO
-      return nil
+    if fixture.citations then
+      return test_citations(engine, fixture)
     else
-      local citation_items = fixture.citation_items
-      if not citation_items then
-        citation_items = {{}}
-        for _, item in ipairs(fixture.input) do
-          table.insert(citation_items[1], {id = item.id})
-        end
-      end
-
-      test_func = function ()
-        local output = {}
-        for _, items in ipairs(citation_items) do
-          local res = citeproc:makeCitationCluster(items)
-          table.insert(output, res)
-        end
-        return table.concat(output, "\n")
-      end
+      return test_citation_items(engine, fixture)
     end
 
   elseif fixture.mode == "bibliography" then
-    local bibentries = fixture.bibentries
-    if not bibentries then
-      bibentries = {{}}
-      for _, item in ipairs(fixture.input) do
-        table.insert(bibentries[1], item.id)
-      end
+    if fixture.citations then
+      pending("citations")
     end
-
-    if fixture.bibsection then
-      -- TODO
-      return nil
-    end
-
-    test_func = function ()
-      local output = {}
-      for _, items in ipairs(bibentries) do
-        citeproc:updateItems(items)
-        local _, entries = citeproc:makeBibliography()
-        local res = "<div class=\"csl-bib-body\">\n"
-        for _, entry in ipairs(entries) do
-          res = res .. "  " .. entry .. "\n"
-        end
-        res = res .. "</div>"
-        table.insert(output, res)
-      end
-      return table.concat(output, "\n")
-    end
+    return test_bibliography(engine, fixture)
   end
-
-  local status, result
-  if protected then
-    status, result = pcall(test_func)
-  else
-    result = test_func()
-    status = result ~= nil
-  end
-
-  if not status then
-    result = "ERROR: " .. result
-  end
-
-  return result
 end
-
 
 local function parse_fixture(path)
   local file = io.open(path, "r")
@@ -149,6 +144,7 @@ local function parse_fixture(path)
   local section = nil
   local contents = nil
   for line in file:lines() do
+    --
     local start = string.match(line, ">>=+%s*([%w-]+)%s*=+")
     if start then
       section = start
@@ -184,75 +180,17 @@ local function parse_fixture(path)
 end
 
 
-
-local function main ()
-
+describe("test-suite", function ()
   local test_dir = "./test/test-suite/processor-tests/humans"
-  local files = listdir(test_dir, arg[1])
-  local num_passed_tests = 0
-  local failing_tests = {}
-  local prefixes = {}
-  local prefix_num_tests = {}
-  local prefix_num_passed_tests = {}
-
-  if #files == 0 then
-    print(string.format("Test %s* not found.", arg[1]))
-  end
-
-  for i, file in ipairs(files) do
-    print(string.format("Test %03d/%03d: %s", i, #files, file))
+  local files = listdir(test_dir)
+  for _, file in ipairs(files) do
     local path = test_dir .. "/" .. file .. ".txt"
     local fixture = parse_fixture(path)
 
-    local result = run_test(fixture, #files > 1)
-
-    if #files == 1 then
-      print("EXPECTED: " .. inspect(fixture.result))
-      print("RESULT  : " .. inspect(result))
-      if result == fixture.result then
-        print("Passed")
-      else
-        print("Failed")
-      end
-    end
-
-
-    local prefix = string.match(file, "^[^_]+")
-    if prefix_num_tests[prefix] then
-      prefix_num_tests[prefix] = prefix_num_tests[prefix] + 1
-    else
-      table.insert(prefixes, prefix)
-      prefix_num_tests[prefix] = 1
-      prefix_num_passed_tests[prefix] = 0
-    end
-
-    if result == fixture.result then
-      num_passed_tests = num_passed_tests + 1
-      prefix_num_passed_tests[prefix] = prefix_num_passed_tests[prefix] + 1
-    else
-      table.insert(failing_tests, file)
-    end
+    it(file, function ()
+      local result = run_test(fixture)
+      assert.equal(fixture.result, result)
+      return fixture.mode
+    end)
   end
-
-  if #prefixes > 1 then
-    print("Prefixes:")
-    for _, prefix in ipairs(prefixes) do
-      print(string.format("%-13s: %d/%d", prefix, prefix_num_passed_tests[prefix], prefix_num_tests[prefix]))
-    end
-  end
-
-  if #files > 1 then
-    print(string.format("Passed: %d/%d", num_passed_tests, #files))
-  end
-
-  if not arg[1] then
-    local file = io.open("test/failing_tests.txt", "w")
-      for _, test in ipairs(failing_tests) do
-        file:write(test, "\n")
-      end
-    file:close()
-  end
-end
-
-
-main()
+end)

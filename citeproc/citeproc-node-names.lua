@@ -1,17 +1,22 @@
-local Element = require("citeproc.citeproc-node-element")
+local names_module = {}
+
+local unicode = require("unicode")
+
+local richtext = require("citeproc.citeproc-richtext")
+local element = require("citeproc.citeproc-element")
 local util = require("citeproc.citeproc-util")
 
 
-local Name = Element:new()
+local Name = element.Element:new()
 
-Name:set_default_options({
+Name.default_options = {
   ["delimiter"] = ", ",
   ["delimiter-precedes-et-al"] = "contextual",
   ["delimiter-precedes-last"] = "contextual",
-  ["et-al-min"] = 0,
-  ["et-al-use-first"] = 0,
-  ["et-al-subsequent-min"] = 0,
-  ["et-al-subsequent-use-first "] = 0,
+  ["et-al-min"] = nil,
+  ["et-al-use-first"] = nil,
+  ["et-al-subsequent-min"] = nil,
+  ["et-al-subsequent-use-first "] = nil,
   ["et-al-use-last"] = false,
   ["form"] = "long",
   ["initialize"] = true,
@@ -20,25 +25,36 @@ Name:set_default_options({
   ["sort-separator"] = ", ",
   ["prefix"] = "",
   ["suffix"] = "",
-})
+}
 
 function Name:render (names, context)
   self:debug_info(context)
   context = self:process_context(context)
-  local and_ = context["and"]
-  local delimiter = context["delimiter"]
-  local delimiter_precedes_et_al = context["delimiter-precedes-et-al"]
-  local delimiter_precedes_last = context["delimiter-precedes-last"]
-  local et_al_min = context["et-al-min"]
-  local et_al_use_first = context["et-al-use-first"]
-  local et_al_subsequent_min = context["et-al-subsequent-min"]
-  local et_al_subsequent_use_first = context["et-al-subsequent-use-first "]
-  local et_al_use_last = context["et-al-use-last"]
 
-  local form = context["form"]
-  local name_as_sort_order = context["name-as-sort-order"]
+  local and_ = context.options["and"]
+  local delimiter = context.options["delimiter"]
+  local delimiter_precedes_et_al = context.options["delimiter-precedes-et-al"]
+  local delimiter_precedes_last = context.options["delimiter-precedes-last"]
+  local et_al_min = context.options["et-al-min"]
+  local et_al_use_first = context.options["et-al-use-first"]
+  local et_al_subsequent_min = context.options["et-al-subsequent-min"]
+  local et_al_subsequent_use_first = context.options["et-al-subsequent-use-first "]
+  local et_al_use_last = context.options["et-al-use-last"]
 
-  local et_al_truncate = et_al_min > 0 and et_al_use_first > 0 and #names >= et_al_min
+  -- sorting
+  if context.options["names-min"] then
+    et_al_min = context.options["names-min"]
+  end
+  if context.options["names-use-first"] then
+    et_al_use_first = context.options["names-use-first"]
+  end
+  if context.options["names-use-last"] ~= nil then
+    et_al_use_last = context.options["names-use-last"]
+  end
+
+  local form = context.options["form"]
+
+  local et_al_truncate = et_al_min and et_al_use_first and #names >= et_al_min
   local et_al_last = et_al_use_last and et_al_use_first <= et_al_min - 2
 
   if form == "count" then
@@ -49,7 +65,7 @@ function Name:render (names, context)
     end
   end
 
-  local output = ""
+  local output = nil
 
   local res = nil
   local inverted = false
@@ -58,13 +74,9 @@ function Name:render (names, context)
     if et_al_truncate and i > et_al_use_first then
       if et_al_last then
         if i == #names then
-          output = self:_concat(output, delimiter, context)
+          output = richtext.concat(output, delimiter)
           output = output .. util.unicode["horizontal ellipsis"]
-          if delimiter_precedes_last == "never" then
-            output = output .. " "
-          else
-            output = self:_concat(output, delimiter, context)
-          end
+          output = output .. " "
           res = self:render_single_name(name, i, context)
           output = output .. res
         end
@@ -72,39 +84,46 @@ function Name:render (names, context)
         if not self:_check_delimiter(delimiter_precedes_et_al, i, inverted) then
           delimiter = " "
         end
-        output = self:_concat_list({output, context.et_al}, delimiter, context)
+        if output then
+          output = richtext.concat_list({output, context.et_al:render(context)}, delimiter)
+        end
         break
       end
     else
       if i > 1 then
-        if i == #names and context["and"] then
+        if i == #names and context.options["and"] then
           if self:_check_delimiter(delimiter_precedes_last, i, inverted) then
-            output = self:_concat(output, delimiter, context)
+            output = richtext.concat(output, delimiter)
           else
             output = output .. " "
           end
           local and_term = ""
-          if context["and"] == "text" then
+          if context.options["and"] == "text" then
             and_term = self:get_term("and"):render(context)
-          elseif context["and"] == "symbol" then
-            and_term = self:get_engine().formatter.text_escape("&")
+          elseif context.options["and"] == "symbol" then
+            and_term = self:escape("&")
           end
           output = output .. and_term .. " "
         else
-          output = self:_concat(output, delimiter, context)
+          output = richtext.concat(output, delimiter)
         end
       end
       res, inverted = self:render_single_name(name, i, context)
       if res and res ~= "" then
-        output = output .. res
+        if output then
+          output = richtext.concat(output, res)
+        else
+          if res._type ~= "RichText" then
+            res = richtext.new(res)
+          end
+          output = res
+        end
       end
     end
   end
 
-  local ret = string.gsub(output, "(%a)'(%a)", "%1" .. util.unicode["apostrophe"] .. "%2")
-
+  local ret = self:format(output, context)
   ret = self:wrap(ret, context)
-  ret = self:format(ret, context)
   return ret
 end
 
@@ -131,31 +150,68 @@ function Name:_check_delimiter (delimiter_attribute, index, inverted)
 end
 
 function Name:render_single_name (name, index, context)
-  local form = context["form"]
-  local initialize = context["initialize"]
-  local initialize_with = context["initialize-with"]
-  local name_as_sort_order = context["name-as-sort-order"]
-  local sort_separator = context["sort-separator"]
+  local form = context.options["form"]
+  local initialize = context.options["initialize"]
+  local initialize_with = context.options["initialize-with"]
+  local name_as_sort_order = context.options["name-as-sort-order"]
+  if context.sorting then
+    name_as_sort_order = "all"
+  end
+  local sort_separator = context.options["sort-separator"]
 
-  local family = name["family"] or ""
-  local given = name["given"] or ""
-  local suffix = name["suffix"] or ""
+  local demote_non_dropping_particle = context.options["demote-non-dropping-particle"]
 
-  if family == "" and given == "" then
-    if name["literal"] then
-      return name["literal"]
+  -- TODO: make it a module
+  local function _strip_quotes(str)
+    if str then
+      str = string.gsub(str, '"', "")
+      str = string.gsub(str, "'", util.unicode["apostrophe"])
+    end
+    return str
+  end
+
+  local family = _strip_quotes(name["family"]) or ""
+  local given = _strip_quotes(name["given"]) or ""
+  local dp = _strip_quotes(name["dropping-particle"]) or ""
+  local ndp = _strip_quotes(name["non-dropping-particle"]) or ""
+  local suffix = _strip_quotes(name["suffix"]) or ""
+  local literal = _strip_quotes(name["literal"]) or ""
+
+  if family == "" then
+    family = literal
+    if family == "" then
+      family = given
+      given = ""
+    end
+    if family ~= "" then
+      return family
     else
       error("Name not avaliable")
     end
   end
 
-  if initialize and initialize_with then
+  if initialize_with then
     given = self:initialize(given, initialize_with, context)
   end
 
+  local demote_ndp = false  -- only active when form == "long"
+  if demote_non_dropping_particle == "display-and-sort" or
+  demote_non_dropping_particle == "sort-only" and context.sorting then
+    demote_ndp = true
+  else  -- demote_non_dropping_particle == "never"
+    demote_ndp = false
+  end
+
+  local family_name_part = nil
+  local given_name_part = nil
   for _, child in ipairs(self:get_children()) do
     if child:is_element() and child:get_element_name() == "name-part" then
-      family, given = child:format_parts(family, given, context)
+      local name_part = child:get_attribute("name")
+      if name_part == "family" then
+        family_name_part = child
+      elseif name_part == "given" then
+        given_name_part = child
+      end
     end
   end
 
@@ -168,21 +224,81 @@ function Name:render_single_name (name, index, context)
       order = {family, given}
       inverted = true
       sort_separator = ""
-    elseif name_as_sort_order == 'all' or (name_as_sort_order == 'first' and index == 1) then
-      order = {family, given}
+    elseif name_as_sort_order == "all" or (name_as_sort_order == "first" and index == 1) then
+
+      -- "Alan al-One"
+      local hyphen_parts = util.split(family, "%-", 1)
+      if #hyphen_parts > 1 then
+        local particle
+        particle, family = table.unpack(hyphen_parts)
+        particle = particle .. "-"
+        ndp = richtext.concat(ndp, particle)
+      end
+
+      if family_name_part then
+        family = family_name_part:format_name_part(family, context)
+        ndp = family_name_part:format_name_part(ndp, context)
+      end
+      if given_name_part then
+        given = given_name_part:format_name_part(given, context)
+        dp = family_name_part:format_name_part(dp, context)
+      end
+
+      if demote_ndp then
+        given = richtext.concat_list({given, dp, ndp}, " ")
+      else
+        family = richtext.concat_list({ndp, family}, " ")
+        given = richtext.concat_list({given, dp}, " ")
+      end
+
+      if family_name_part then
+        family = family_name_part:wrap_name_part(family, context)
+      end
+      if given_name_part then
+        given = given_name_part:wrap_name_part(given, context)
+      end
+
+      order = {family, given, suffix}
       inverted = true
     else
-      order = {given, family}
-      sort_separator = " "
+      if family_name_part then
+        family = family_name_part:format_name_part(family, context)
+        ndp = family_name_part:format_name_part(ndp, context)
+      end
+      if given_name_part then
+        given = given_name_part:format_name_part(given, context)
+        dp = family_name_part:format_name_part(dp, context)
+      end
+
+      family = richtext.concat_list({dp, ndp, family}, " ")
       if name["comma-suffix"] then
         suffix_separator = ", "
       else
         suffix_separator = " "
       end
+      family = richtext.concat_list({family, suffix}, suffix_separator)
+
+      if family_name_part then
+        family = family_name_part:wrap_name_part(family, context)
+      end
+      if given_name_part then
+        given = given_name_part:wrap_name_part(given, context)
+      end
+
+      order = {given, family}
+      sort_separator = " "
     end
-    res = self:_concat_list(order, sort_separator, context)
-    res = self:_concat_list({res, suffix}, suffix_separator, context)
+    res = richtext.concat_list(order, sort_separator)
+
   elseif form == "short" then
+    if family_name_part then
+      family = family_name_part:format_name_part(family, context)
+      ndp = family_name_part:format_name_part(ndp, context)
+    end
+    family = util.concat({ndp, family}, " ")
+      if family_name_part then
+        family = family_name_part:wrap_name_part(family, context)
+      end
     res = family
   else
     error(string.format('Invalid attribute form="%s" of "name".', form))
@@ -190,67 +306,144 @@ function Name:render_single_name (name, index, context)
   return res, inverted
 end
 
-function Name:initialize (given, mark, context)
-  if not context["initialize-with-hyphen"] then
+function Name:initialize (given, terminator, context)
+  if not given or given == "" then
+    return ""
+  end
+
+  local initialize = context.options["initialize"]
+  if context.options["initialize-with-hyphen"] == false then
     given = string.gsub(given, "-", " ")
   end
-  given = string.gsub(given, "%.", " ")
-  local res = ""
-  for _, word in ipairs(util.split(given)) do
-    local parts = {}
-    for _, part in ipairs(util.split(word, "-")) do
-      local first_letter = utf8.char(utf8.codepoint(part))
-      if util.is_upper(first_letter) then
-        table.insert(parts, first_letter)
+
+  -- Split the given name to name_list (e.g., {"John", "M." "E"})
+  -- Compound names are splitted too but are marked in punc_list.
+  local name_list = {}
+  local punct_list = {}
+  local last_position = 1
+  for name, pos in string.gmatch(given, "([^-.%s]+[-.%s]+)()") do
+    table.insert(name_list, string.match(name, "^[^-%s]+"))
+    if string.match(name, "%-") then
+      table.insert(punct_list, "-")
+    else
+      table.insert(punct_list, "")
+    end
+    last_position = pos
+  end
+  if last_position <= #given then
+    table.insert(name_list, util.strip(string.sub(given, last_position)))
+    table.insert(punct_list, "")
+  end
+
+  for i, name in ipairs(name_list) do
+    local is_particle = false
+    local is_abbreviation = false
+
+    local first_letter = utf8.char(utf8.codepoint(name))
+    if util.is_lower(first_letter) then
+        is_particle = true
+    elseif #name == 1 then
+      is_abbreviation = true
+    else
+      local abbreviation = string.match(name, "^([^.]+)%.$")
+      if abbreviation then
+        is_abbreviation = true
+        name = abbreviation
       end
     end
-    local word = util.concat(parts, util.rstrip(mark) .. "-")
-    if word then
-      res = res .. word .. mark
+
+    if is_particle then
+      name_list[i] = name .. " "
+      if i > 1 and not string.match(name_list[i-1], "%s$") then
+        name_list[i-1] = name_list[i-1] .. " "
+      end
+    elseif is_abbreviation then
+      name_list[i] = name .. terminator
+    else
+      if initialize then
+        if util.is_upper(name) then
+          name = first_letter
+        else
+          -- Long abbreviation: "TSerendorjiin" -> "Ts."
+          local abbreviation = ""
+          for _, c in utf8.codes(name) do
+            local char = utf8.char(c)
+            local lower = unicode.utf8.lower(char)
+            if lower == char then
+              break
+            end
+            if abbreviation == "" then
+              abbreviation = char
+            else
+              abbreviation = abbreviation .. lower
+            end
+          end
+          name = abbreviation
+        end
+        name_list[i] = name .. terminator
+      else
+        name_list[i] = name .. " "
+      end
+    end
+
+    -- Handle the compound names
+    if i > 1 and punct_list[i-1] == "-" then
+      if is_particle then  -- special case "Guo-ping"
+        name_list[i] = ""
+      else
+        name_list[i-1] = util.rstrip(name_list[i-1])
+        name_list[i] = "-" .. name_list[i]
+      end
     end
   end
-  res = util.rstrip(res)
+
+  local res = util.concat(name_list, "")
+  res = util.strip(res)
+  return res
+
+end
+
+local NamePart = element.Element:new()
+
+function NamePart:format_name_part(name_part, context)
+  context = self:process_context(context)
+  local res = self:case(name_part, context)
+  res = self:format(res, context)
+  return res
+end
+
+function NamePart:wrap_name_part(name_part, context)
+  context = self:process_context(context)
+  local res = self:wrap(name_part, context)
   return res
 end
 
 
-local NamePart = Element:new()
+local EtAl = element.Element:new()
 
-NamePart.format_parts = function (self, family, given, context)
-  local context = self:process_context(context)
-  local name = context["name"]
-
-  if name == "family" then
-    family = self:case(family, context)
-    family = self:wrap(family, context)
-    family = self:format(family, context)
-  elseif name == "given" then
-    given = self:case(given, context)
-    given = self:format(given, context)
-    given = self:wrap(given, context)
-  end
-  return family, given
-end
-
-
-local EtAl = Element:new()
-
-EtAl:set_default_options({
+EtAl.default_options = {
   term = "et-al",
-})
+}
 
-EtAl.render = function (self, item, context)
+EtAl.render = function (self, context)
+  self:debug_info(context)
   context = self:process_context(context)
-  local res = self:get_term(context["term"]):render(context)
+  local res = self:get_term(context.options["term"]):render(context)
   res = self:format(res, context)
   return res
 end
 
 
-local Substitute = Element:new()
+local Substitute = element.Element:new()
 
 function Substitute:render (item, context)
   self:debug_info(context)
+
+  if context.suppressed_variables then
+    -- true in layout, not in sort
+    context.suppress_subsequent_variables = true
+  end
+
   for i, child in ipairs(self:get_children()) do
     if child:is_element() then
       local result = child:render(item, context)
@@ -263,62 +456,129 @@ function Substitute:render (item, context)
 end
 
 
-local Names = Element:new()
+local Names = element.Element:new()
 
 function Names:render (item, context)
   self:debug_info(context)
   context = self:process_context(context)
 
-  local et_al = self:get_child("et-al")
-  if et_al == nil then
-    et_al = self:create_element("et-al", {}, self)
-    EtAl:set_base_class(et_al)
+  local names_delimiter = context.options["names-delimiter"]
+  if names_delimiter then
+    context.options["delimiter"] = names_delimiter
   end
-  context.et_al = et_al:render(item, context)
 
-  local name = self:get_child("name")
-  if name == nil then
+  -- Inherit attributes of parent `names` element
+  local names_element = context.names_element
+  if names_element then
+    for key, value in pairs(names_element._attr) do
+      context.options[key] = value
+    end
+    for key, value in pairs(self._attr) do
+      context.options[key] = value
+    end
+  else
+    context.names_element = self
+    context.variable = context.options["variable"]
+  end
+
+  local name, et_al, label
+  -- The position of cs:label relative to cs:name determines the order of
+  -- the name and label in the rendered text.
+  local label_position = nil
+  for _, child in ipairs(self:get_children()) do
+    if child:is_element() then
+      local element_name = child:get_element_name()
+      if element_name == "name" then
+        name = child
+        if label then
+          label_position = "before"
+        end
+      elseif element_name == "et-al" then
+        et_al = child
+      elseif element_name == "label" then
+        label = child
+        if name then
+          label_position = "after"
+        end
+      end
+    end
+  end
+  if label_position then
+    context.label_position = label_position
+  else
+    label_position = context.label_position or "after"
+  end
+
+  -- local name = self:get_child("name")
+  if not name then
+    name = context.name_element
+  end
+  if not name then
     name = self:create_element("name", {}, self)
     Name:set_base_class(name)
   end
+  context.name_element = name
 
-  local label = self:get_child("label")
+  -- local et_al = self:get_child("et-al")
+  if not et_al then
+    et_al = context.et_al
+  end
+  if not et_al then
+    et_al = self:create_element("et-al", {}, self)
+    EtAl:set_base_class(et_al)
+  end
+  context.et_al = et_al
 
-  local output = {}
-  local num_names = 0
-  for _, role in ipairs(util.split(context["variable"])) do
-    local names = item[role]
+  -- local label = self:get_child("label")
+  if label then
+    context.label = label
+  else
+    label = context.label
+  end
 
-    table.insert(context.variable_attempt, names ~= nil)
+  local variable_names = context.options["variable"] or context.variable
+  local ret = nil
 
-    if names then
-      local res = name:render(names, context)
-      if res then
-        if type(res) == "number" then  -- name[form="count"]
-          num_names = num_names + res
-        elseif label then
-          local label_result = label:render(item, context)
-          if label_result then
-            res = res .. label_result
+  if variable_names then
+    local output = {}
+    local num_names = 0
+    for _, role in ipairs(util.split(variable_names)) do
+      local names = self:get_variable(item, role, context)
+
+      table.insert(context.variable_attempt, names ~= nil)
+
+      if names then
+        local res = name:render(names, context)
+        if res then
+          if type(res) == "number" then  -- name[form="count"]
+            num_names = num_names + res
+          elseif label and not context.sorting then
+            -- drop name label in sorting
+            local label_result = label:render(role, context)
+            if label_result then
+              if label_position == "before" then
+                res = richtext.concat(label_result, res)
+              else
+                res = richtext.concat(res, label_result)
+              end
+            end
           end
         end
+        table.insert(output, res)
       end
-      table.insert(output, res)
+    end
+
+    if num_names > 0 then
+      ret = tostring(num_names)
+    else
+      ret = self:concat(output, context)
     end
   end
-
-  local ret = nil
-  if num_names > 0 then
-    ret = num_names
-  else
-    ret = self:concat(output, context)
-  end
-
-  table.insert(context.rendered_quoted_text, false)
 
   if ret then
     ret = self:format(ret, context)
     ret = self:wrap(ret, context)
+    ret = self:display(ret, context)
     return ret
   else
     local substitute = self:get_child("substitute")
@@ -331,11 +591,10 @@ function Names:render (item, context)
 end
 
 
+names_module.Names = Names
+names_module.Name = Name
+names_module.NamePart = NamePart
+names_module.EtAl = EtAl
+names_module.Substitute = Substitute
 
-return {
-  names = Names,
-  name = Name,
-  ["name-part"] = NamePart,
-  ["et-al"] = EtAl,
-  substitute = Substitute,
-}
+return names_module

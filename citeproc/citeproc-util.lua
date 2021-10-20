@@ -4,11 +4,13 @@
 
 -- load `slnunicode` from LuaTeX
 local unicode = require("unicode")
+local inspect = require("inspect")
 
 
 local util = {}
 
 function util.to_ordinal (n)
+  assert(type(n) == "number")
   local last_digit = n % 10
   if last_digit == 1 and n ~= 11
     then return tostring(n) .. "st"
@@ -22,45 +24,80 @@ function util.to_ordinal (n)
 end
 
 
-util.error = function (message)
-  error(message, 2)
-end
-
-
-util.warning = function (message)
-  if message == nil then
-    message = ""
+function util.error(message)
+  if luatexbase then
+    luatexbase.module_error("citeproc", message)
   else
-    message = tostring(message)
+    error(message, 2)
   end
-  io.stderr:write("Warning: " .. message .. "\n")
 end
 
+util.warning_enabled = true
 
-util.debug = function (message)
-  io.stderr:write("Debug: " .. tostring(message) .. "\n")
+function util.warning(message)
+  if luatexbase then
+    luatexbase.module_warning("citeproc", message)
+  elseif util.warning_enabled then
+    io.stderr:write(message, "\n")
+  end
 end
 
-function util.split (str, pat)
-  if pat == nil then
-    pat = "%s+"
-  end
-   local t = {}  -- NOTE: use {n = 0} in Lua-5.0
-   local fpat = "(.-)" .. pat
-   local last_end = 1
-   local s, e, cap = str:find(fpat, 1)
-   while s do
-    if s ~= 1 or cap ~= "" then
-     table.insert(t, cap)
+-- local remove_all_metatables = function(item, path)
+--   if path[#path] ~= inspect.METATABLE then return item end
+-- end
+
+function util.debug(...)
+  -- io.stderr:write(inspect(message, {process = remove_all_metatables}))
+  for i, message in ipairs({...}) do
+    if i > 1 then
+      io.stderr:write("\t")
     end
-    last_end = e+1
-    s, e, cap = str:find(fpat, last_end)
-   end
-   if last_end <= #str then
-    cap = str:sub(last_end)
-    table.insert(t, cap)
-   end
-   return t
+    io.stderr:write(inspect(message))
+  end
+  io.stderr:write("\n")
+end
+
+-- Similar to re.split() in Python
+function util.split(str, seps, maxsplit, include_sep)
+  if not str then
+    error("Invalid string.")
+  end
+  seps = seps or "%s+"
+  if seps == "" then
+    error("Empty separator")
+  end
+  if type(seps) == "string" then
+    seps = {seps}
+  end
+
+  local splits = {}
+  for _, sep_pattern in ipairs(seps) do
+    for start, sep, stop in string.gmatch(str, "()(" .. sep_pattern .. ")()") do
+      table.insert(splits, {start, sep, stop})
+    end
+  end
+
+  if #seps > 1 then
+    table.sort(splits, function(a, b) return a[1] < b[1] end)
+  end
+
+  local res = {}
+  local previous = 1
+  for _, sep_tuple in ipairs(splits) do
+    local start, sep, stop = table.unpack(sep_tuple)
+    local item = string.sub(str, previous, start - 1)
+    if include_sep then
+      item = {item, sep}
+    end
+    table.insert(res, item)
+    previous = stop
+  end
+  local item = string.sub(str, previous, #str)
+  if include_sep then
+    item = {item, ""}
+  end
+  table.insert(res, item)
+  return res
 end
 
 function util.slice (t, start, stop)
@@ -83,13 +120,15 @@ end
 
 function util.concat (list, sep)
   -- This helper function omits empty strings in list, which is different from table.concat
-  local res = nil
-  for _, s in ipairs(list) do
+  -- This function always returns a string, even empty.
+  local res = ""
+  for i = 1, #list do
+    local s = list[i]
     if s and s~= "" then
-      if res then
-        res = res .. sep .. s
-      else
+      if res == "" then
         res = s
+      else
+        res = res .. sep .. s
       end
     end
   end
@@ -154,6 +193,7 @@ end
 
 util.variable_types = {}
 
+-- schema/schemas/styles/csl-variables.rnc
 util.variables = {}
 
 -- Date variables
@@ -281,6 +321,7 @@ util.primary_dialects = {
 -- Range delimiter
 
 util.unicode = {
+  ["no-break space"] = "\u{00A0}",
   ["en dash"] = "\u{2013}",
   ["em dash"] = "\u{2014}",
   ["left single quotation mark"] = "\u{2018}",
@@ -288,7 +329,8 @@ util.unicode = {
   ["apostrophe"] = "\u{2019}",
   ["left double quotation mark"] = "\u{201C}",
   ["right double quotation mark"] = "\u{201D}",
-  ["horizontal ellipsis"] = "\u{2026}"
+  ["horizontal ellipsis"] = "\u{2026}",
+  ["narrow no-break space"] = "\u{202F}",
 }
 
 
@@ -303,31 +345,9 @@ function util.is_upper (str)
 end
 
 function util.capitalize (str)
-  str = string.lower(str)
+  str = unicode.utf8.lower(str)
   local res = string.gsub(str, "%w", unicode.utf8.upper, 1)
   return res
-end
-
-function util.capitalize_first (str)
-  local output = {}
-  for i, word in ipairs(util.split(str)) do
-    if i == 1 and util.is_lower(word) then
-      word = util.capitalize(word)
-    end
-    table.insert(output, word)
-  end
-  return table.concat(output, " ")
-end
-
-function util.capitalize_all (str)
-  local output = {}
-  for _, word in ipairs(util.split(str)) do
-    if util.is_lower(word) then
-      word = util.capitalize(word)
-    end
-    table.insert(output, word)
-  end
-  return table.concat(output, " ")
 end
 
 function util.sentence (str)
@@ -346,32 +366,124 @@ function util.sentence (str)
   end
 end
 
+-- TODO: process multiple words
 util.stop_words = {
   ["a"] = true,
+  ["according to"] = true,
+  ["across"] = true,
+  ["afore"] = true,
+  ["after"] = true,
+  ["against"] = true,
+  ["ahead of"] = true,
+  ["along"] = true,
+  ["alongside"] = true,
+  ["amid"] = true,
+  ["amidst"] = true,
+  ["among"] = true,
+  ["amongst"] = true,
   ["an"] = true,
   ["and"] = true,
+  ["anenst"] = true,
+  ["apart from"] = true,
+  ["apropos"] = true,
+  ["apud"] = true,
+  ["around"] = true,
   ["as"] = true,
+  ["as regards"] = true,
+  ["aside"] = true,
+  ["astride"] = true,
   ["at"] = true,
+  ["athwart"] = true,
+  ["atop"] = true,
+  ["back to"] = true,
+  ["barring"] = true,
+  ["because of"] = true,
+  ["before"] = true,
+  ["behind"] = true,
+  ["below"] = true,
+  ["beneath"] = true,
+  ["beside"] = true,
+  ["besides"] = true,
+  ["between"] = true,
+  ["beyond"] = true,
   ["but"] = true,
   ["by"] = true,
+  ["c"] = true,
+  ["ca"] = true,
+  ["circa"] = true,
+  ["close to"] = true,
+  ["d'"] = true,
+  ["de"] = true,
+  ["despite"] = true,
   ["down"] = true,
+  ["due to"] = true,
+  ["during"] = true,
+  ["et"] = true,
+  ["except"] = true,
+  ["far from"] = true,
   ["for"] = true,
+  ["forenenst"] = true,
   ["from"] = true,
+  ["given"] = true,
   ["in"] = true,
+  ["inside"] = true,
+  ["instead of"] = true,
   ["into"] = true,
+  ["lest"] = true,
+  ["like"] = true,
+  ["modulo"] = true,
+  ["near"] = true,
+  ["next"] = true,
   ["nor"] = true,
+  ["notwithstanding"] = true,
   ["of"] = true,
+  ["off"] = true,
   ["on"] = true,
   ["onto"] = true,
   ["or"] = true,
+  ["out"] = true,
+  ["outside of"] = true,
   ["over"] = true,
+  ["per"] = true,
+  ["plus"] = true,
+  ["prior to"] = true,
+  ["pro"] = true,
+  ["pursuant to"] = true,
+  ["qua"] = true,
+  ["rather than"] = true,
+  ["regardless of"] = true,
+  ["sans"] = true,
+  ["since"] = true,
   ["so"] = true,
+  ["such as"] = true,
+  ["than"] = true,
+  ["that of"] = true,
   ["the"] = true,
+  ["through"] = true,
+  ["throughout"] = true,
+  ["thru"] = true,
+  ["thruout"] = true,
   ["till"] = true,
   ["to"] = true,
+  ["toward"] = true,
+  ["towards"] = true,
+  ["under"] = true,
+  ["underneath"] = true,
+  ["until"] = true,
+  ["unto"] = true,
   ["up"] = true,
+  ["upon"] = true,
+  ["v."] = true,
+  ["van"] = true,
+  ["versus"] = true,
   ["via"] = true,
+  ["vis-à-vis"] = true,
+  ["von"] = true,
+  ["vs."] = true,
+  ["where as"] = true,
   ["with"] = true,
+  ["within"] = true,
+  ["without"] = true,
   ["yet"] = true,
 }
 
@@ -379,7 +491,7 @@ function util.title (str)
   local output = {}
   local previous = ":"
   for i, word in ipairs(util.split(str)) do
-    local lower = string.lower(word)
+    local lower = unicode.utf8.lower(word)
     if previous ~= ":" and util.stop_words[string.match(lower, "%w+")] then
       table.insert(output, lower)
     elseif util.is_lower(word) or util.is_upper(word) then
@@ -487,6 +599,165 @@ function util.is_romanesque (s)
     end
   end
   return res
+end
+
+function util.convert_roman (number)
+  assert(type(number) == "number")
+  local output = {}
+  for _, tuple in ipairs(util.roman_numerals) do
+    local letter, value = table.unpack(tuple)
+    table.insert(output, string.rep(letter, number // value))
+    number = number % value
+  end
+  return table.concat(output, "")
+end
+
+util.roman_numerals = {
+  {"m",  1000},
+  {"cm", 900},
+  {"d",  500},
+  {"cd", 400},
+  {"c",  100},
+  {"xc", 90},
+  {"l",  50},
+  {"xl", 40},
+  {"x",  10},
+  {"ix", 9},
+  {"v",  5},
+  {"iv", 4},
+  {"i",  1},
+};
+
+
+-- Choose
+
+util.position_map = {
+  ["first"] = 0,
+  ["subsequent"] = 1,
+  ["ibid"] = 2,
+  ["ibid-with-locator"] = 3,
+  ["container-subsequent"] = 4,
+}
+
+
+-- Output
+
+util.superscripts = {
+  ["\u{00AA}"] = "\u{0061}",
+  ["\u{00B2}"] = "\u{0032}",
+  ["\u{00B3}"] = "\u{0033}",
+  ["\u{00B9}"] = "\u{0031}",
+  ["\u{00BA}"] = "\u{006F}",
+  ["\u{02B0}"] = "\u{0068}",
+  ["\u{02B1}"] = "\u{0266}",
+  ["\u{02B2}"] = "\u{006A}",
+  ["\u{02B3}"] = "\u{0072}",
+  ["\u{02B4}"] = "\u{0279}",
+  ["\u{02B5}"] = "\u{027B}",
+  ["\u{02B6}"] = "\u{0281}",
+  ["\u{02B7}"] = "\u{0077}",
+  ["\u{02B8}"] = "\u{0079}",
+  ["\u{02E0}"] = "\u{0263}",
+  ["\u{02E1}"] = "\u{006C}",
+  ["\u{02E2}"] = "\u{0073}",
+  ["\u{02E3}"] = "\u{0078}",
+  ["\u{02E4}"] = "\u{0295}",
+  ["\u{1D2C}"] = "\u{0041}",
+  ["\u{1D2D}"] = "\u{00C6}",
+  ["\u{1D2E}"] = "\u{0042}",
+  ["\u{1D30}"] = "\u{0044}",
+  ["\u{1D31}"] = "\u{0045}",
+  ["\u{1D32}"] = "\u{018E}",
+  ["\u{1D33}"] = "\u{0047}",
+  ["\u{1D34}"] = "\u{0048}",
+  ["\u{1D35}"] = "\u{0049}",
+  ["\u{1D36}"] = "\u{004A}",
+  ["\u{1D37}"] = "\u{004B}",
+  ["\u{1D38}"] = "\u{004C}",
+  ["\u{1D39}"] = "\u{004D}",
+  ["\u{1D3A}"] = "\u{004E}",
+  ["\u{1D3C}"] = "\u{004F}",
+  ["\u{1D3D}"] = "\u{0222}",
+  ["\u{1D3E}"] = "\u{0050}",
+  ["\u{1D3F}"] = "\u{0052}",
+  ["\u{1D40}"] = "\u{0054}",
+  ["\u{1D41}"] = "\u{0055}",
+  ["\u{1D42}"] = "\u{0057}",
+  ["\u{1D43}"] = "\u{0061}",
+  ["\u{1D44}"] = "\u{0250}",
+  ["\u{1D45}"] = "\u{0251}",
+  ["\u{1D46}"] = "\u{1D02}",
+  ["\u{1D47}"] = "\u{0062}",
+  ["\u{1D48}"] = "\u{0064}",
+  ["\u{1D49}"] = "\u{0065}",
+  ["\u{1D4A}"] = "\u{0259}",
+  ["\u{1D4B}"] = "\u{025B}",
+  ["\u{1D4C}"] = "\u{025C}",
+  ["\u{1D4D}"] = "\u{0067}",
+  ["\u{1D4F}"] = "\u{006B}",
+  ["\u{1D50}"] = "\u{006D}",
+  ["\u{1D51}"] = "\u{014B}",
+  ["\u{1D52}"] = "\u{006F}",
+  ["\u{1D53}"] = "\u{0254}",
+  ["\u{1D54}"] = "\u{1D16}",
+  ["\u{1D55}"] = "\u{1D17}",
+  ["\u{1D56}"] = "\u{0070}",
+  ["\u{1D57}"] = "\u{0074}",
+  ["\u{1D58}"] = "\u{0075}",
+  ["\u{1D59}"] = "\u{1D1D}",
+  ["\u{1D5A}"] = "\u{026F}",
+  ["\u{1D5B}"] = "\u{0076}",
+  ["\u{1D5C}"] = "\u{1D25}",
+  ["\u{1D5D}"] = "\u{03B2}",
+  ["\u{1D5E}"] = "\u{03B3}",
+  ["\u{1D5F}"] = "\u{03B4}",
+  ["\u{1D60}"] = "\u{03C6}",
+  ["\u{1D61}"] = "\u{03C7}",
+  ["\u{2070}"] = "\u{0030}",
+  ["\u{2071}"] = "\u{0069}",
+  ["\u{2074}"] = "\u{0034}",
+  ["\u{2075}"] = "\u{0035}",
+  ["\u{2076}"] = "\u{0036}",
+  ["\u{2077}"] = "\u{0037}",
+  ["\u{2078}"] = "\u{0038}",
+  ["\u{2079}"] = "\u{0039}",
+  ["\u{207A}"] = "\u{002B}",
+  ["\u{207B}"] = "\u{2212}",
+  ["\u{207C}"] = "\u{003D}",
+  ["\u{207D}"] = "\u{0028}",
+  ["\u{207E}"] = "\u{0029}",
+  ["\u{207F}"] = "\u{006E}",
+  ["\u{2120}"] = "\u{0053}\u{004D}",
+  ["\u{2122}"] = "\u{0054}\u{004D}",
+  ["\u{3192}"] = "\u{4E00}",
+  ["\u{3193}"] = "\u{4E8C}",
+  ["\u{3194}"] = "\u{4E09}",
+  ["\u{3195}"] = "\u{56DB}",
+  ["\u{3196}"] = "\u{4E0A}",
+  ["\u{3197}"] = "\u{4E2D}",
+  ["\u{3198}"] = "\u{4E0B}",
+  ["\u{3199}"] = "\u{7532}",
+  ["\u{319A}"] = "\u{4E59}",
+  ["\u{319B}"] = "\u{4E19}",
+  ["\u{319C}"] = "\u{4E01}",
+  ["\u{319D}"] = "\u{5929}",
+  ["\u{319E}"] = "\u{5730}",
+  ["\u{319F}"] = "\u{4EBA}",
+  ["\u{02C0}"] = "\u{0294}",
+  ["\u{02C1}"] = "\u{0295}",
+  ["\u{06E5}"] = "\u{0648}",
+  ["\u{06E6}"] = "\u{064A}",
+}
+
+
+-- File IO
+
+function util.read_file(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    return content
 end
 
 

@@ -23,13 +23,15 @@ These packages are available in the latest version of TeX Live. To correctly loa
 
 A simple example is in the [`example/`](https://github.com/zepinglee/citeproc-lua/tree/main/example) directory.
 
+Note that the API is not stable and is likely to change in the future.
+
 ### Create an engine instance
 ```lua
-local CiteProc = require("citeproc")
-local citeproc = CiteProc:new(sys, style)
+local citeproc = require("citeproc")
+local engine = citeproc.new(sys, style)
 ```
 
-The sys is a table which must contain `retrieveLocale()` and `retrieveItem()` methods. Thet are called to feed the engine with inputs.
+The `sys` is a table which must contain `retrieveLocale()` and `retrieveItem()` functions. Thet are called to feed the engine with inputs.
 
 
 
@@ -37,7 +39,7 @@ The sys is a table which must contain `retrieveLocale()` and `retrieveItem()` me
 
 The `updateItems()` method refreshes the registry of the engine.
 ```lua
-params, result = citeproc:updateItems(ids)
+params, result = engine:updateItems(ids)
 ```
 The `ids` is just a list of `id`s.
 ```lua
@@ -50,7 +52,7 @@ ids = {"ITEM-1", "ITEM-2"}
 The `makeCitationCluster()` method is called to generate a citation of (possibly) multiple items.
 
 ```lua
-params, result = citeproc:makeCitationCluster(cite_items)
+params, result = engine:makeCitationCluster(cite_items)
 ```
 
 The `cite_items` is a list of tables which contain the `id` and other options (not implemented).
@@ -73,14 +75,20 @@ The more complicated method `processCitationCluster()` is not implemented yet.
 
 The `makeBibliography()` method produces the bibliography and parameters required for formatting.
 ```lua
-params, result = citeproc:makeBibliography()
+result = engine:makeBibliography()
 ```
 
 Returns:
 ```lua
 result = {
-  '<div class="csl-entry">B. D’Arcus, <i>Boundaries of Dissent: Protest and State Power in the Media Age</i>, Routledge, 2005.</div>',
-  '<div class="csl-entry">F.G. Bennett Jr., “Getting Property Right: ‘Informal’ Mortgages in the Japanese Courts,” <i>Pac. Rim L. &#38; Pol’y J.</i>, vol. 18, Aug. 2009, pp. 463–509.</div>'
+  {
+    hangingindent = false,
+    ["second-field-align"] = false,
+  },
+  {
+    '<div class="csl-entry">B. D’Arcus, <i>Boundaries of Dissent: Protest and State Power in the Media Age</i>, Routledge, 2005.</div>',
+    '<div class="csl-entry">F.G. Bennett Jr., “Getting Property Right: ‘Informal’ Mortgages in the Japanese Courts,” <i>Pac. Rim L. &#38; Pol’y J.</i>, vol. 18, Aug. 2009, pp. 463–509.</div>'
+  }
 }
 ```
 
@@ -88,29 +96,38 @@ result = {
 
 ## Running the tests
 
-First clone the two submodules [`test-suite`](https://github.com/citation-style-language/test-suite) and [`locales`](https://github.com/citation-style-language/locales) into the [`test/`](https://github.com/zepinglee/citeproc-lua/tree/main/test) directory.
+The [`busted`](https://olivinelabs.com/busted/#output-handlers) library is required to run the tests. Make sure it is installed with the same Lua version as LuaTeX so that it can be loaded correctly.
+
+```bash
+luarocks --lua-dir /usr/local/opt/lua@5.3 --lua-version 5.3 install busted
+```
+
+Clone the two submodules [`test-suite`](https://github.com/citation-style-language/test-suite) and [`locales`](https://github.com/citation-style-language/locales) into the [`test/`](https://github.com/zepinglee/citeproc-lua/tree/main/test) directory.
 
 ```bash
 git submodule update --init
 ```
 
-Then you can run the test script [`test/citeproc-test.lua`](https://github.com/zepinglee/citeproc-lua/tree/main/test/citeproc-test.lua).
+Run all the tests from `test-suite`.
 
 ```bash
-texlua test/citepric-test.lua
+busted --run=citeproc
 ```
 
-The names of failing tests are printed to [`test/failing_tests.txt`](https://github.com/zepinglee/citeproc-lua/tree/main/test/failing_tests.txt).
+The log is printed to [`test/citeproc-test.log`](https://github.com/zepinglee/citeproc-lua/tree/main/test/citeproc-test.log).
+Currently the `citeproc-lua` has passed 594 of 853 tests from test-suite.
 
-
-You may also run a single test or a subset of tests with common prefix.
+Select tests via pattern.
 
 ```bash
-texlua test/citepric-test.lua name_AfterInvertedName
-texlua test/citepric-test.lua name_
+busted --run=citeproc --filter=sort_CitationNumber
 ```
 
-Currently the `citeproc-lua` has passed 315 of 853 tests of test-suite.
+Run the test of modules in `citeproc-lua`.
+
+```bash
+busted --pattern=formatted_text --filter=quotes
+```
 
 
 
@@ -119,11 +136,16 @@ Currently the `citeproc-lua` has passed 315 of 853 tests of test-suite.
 - CSL
   - [CSL Homepage](https://citationstyles.org/)
   - [CSL 1.0.1 specification](https://docs.citationstyles.org/en/stable/specification.html)
+  - [CSL 1.0.2 specification](https://github.com/citation-style-language/documentation/blob/master/specification.rst)
+  - [CSL 1.1 specification](https://github.com/citation-style-language/documentation/blob/v1.1/specification.rst)
   - [CSL schema](https://github.com/citation-style-language/schema)
   - [CSL processors in other languages](https://citationstyles.org/developers/#csl-processors)
     - [Juris-M/citeproc-js](https://github.com/Juris-M/citeproc-js)
       - [documentation](https://citeproc-js.readthedocs.io/en/latest/)
     - [brechtm/citeproc-py](https://github.com/brechtm/citeproc-py)
+    - [jgm/citeproc](https://github.com/jgm/citeproc)
+    - [andras-simonyi/citeproc-el](https://github.com/andras-simonyi/citeproc-el)
+    - [inukshuk/citeproc-ruby](https://github.com/inukshuk/citeproc-ruby)
     - [zotero/citeproc-rs](https://github.com/zotero/citeproc-rs)
   - [CSL locales](https://github.com/citation-style-language/locales)
   - [CSL styles](https://github.com/citation-style-language/styles)
